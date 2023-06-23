@@ -17,8 +17,8 @@ public enum BusinessErrorEnum implements ErrorEnum {
     //==================================chat==================================
     SYSTEM_ERROR(1001, "系统出小差了，请稍后再试哦~~"),
     ;
-    private Integer code;
-    private String msg;
+    private final Integer code;
+    private final String msg;
 
     @Override
     public Integer getErrorCode() {
