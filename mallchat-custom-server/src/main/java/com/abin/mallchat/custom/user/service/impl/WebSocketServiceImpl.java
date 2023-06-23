@@ -4,11 +4,14 @@ import cn.hutool.core.collection.CollectionUtil;
 import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.json.JSONUtil;
+import com.abin.mallchat.common.common.annotation.FrequencyControl;
 import com.abin.mallchat.common.common.config.ThreadPoolConfig;
 import com.abin.mallchat.common.common.event.UserOfflineEvent;
 import com.abin.mallchat.common.common.event.UserOnlineEvent;
 import com.abin.mallchat.common.user.dao.UserDao;
 import com.abin.mallchat.common.user.domain.entity.User;
+import com.abin.mallchat.common.user.domain.enums.RoleEnum;
+import com.abin.mallchat.common.user.service.IRoleService;
 import com.abin.mallchat.common.user.service.cache.UserCache;
 import com.abin.mallchat.custom.user.domain.dto.ws.WSChannelExtraDTO;
 import com.abin.mallchat.custom.user.domain.vo.request.ws.WSAuthorize;
@@ -77,6 +80,8 @@ public class WebSocketServiceImpl implements WebSocketService {
     private ThreadPoolTaskExecutor threadPoolTaskExecutor;
     @Autowired
     private UserCache userCache;
+    @Autowired
+    private IRoleService iRoleService;
 
     /**
      * 处理用户登录请求，需要返回一张带code的二维码
@@ -85,6 +90,7 @@ public class WebSocketServiceImpl implements WebSocketService {
      */
     @SneakyThrows
     @Override
+    @FrequencyControl(time = 100, count = 5, spEl = "T(com.abin.mallchat.common.common.utils.RequestHolder).get().getIp()")
     public void handleLoginReq(Channel channel) {
         //生成随机不重复的登录码
         Integer code = generateLoginCode(channel);
@@ -115,6 +121,7 @@ public class WebSocketServiceImpl implements WebSocketService {
      * @param channel
      */
     @Override
+    @FrequencyControl(time = 10, count = 5, spEl = "T(com.abin.mallchat.common.common.utils.RequestHolder).get().getIp()")
     public void connect(Channel channel) {
         ONLINE_WS_MAP.put(channel, new WSChannelExtraDTO());
     }
@@ -152,7 +159,8 @@ public class WebSocketServiceImpl implements WebSocketService {
         //更新上线列表
         online(channel, user.getId());
         //返回给用户登录成功
-        sendMsg(channel, WSAdapter.buildLoginSuccessResp(user, token));
+        boolean hasPower = iRoleService.hasPower(user.getId(), RoleEnum.CHAT_MANAGER);
+        sendMsg(channel, WSAdapter.buildLoginSuccessResp(user, token, hasPower));
         //发送用户上线事件
         boolean online = userCache.isOnline(user.getId());
         if (!online) {
@@ -169,6 +177,7 @@ public class WebSocketServiceImpl implements WebSocketService {
         getOrInitChannelExt(channel).setUid(uid);
         ONLINE_UID_MAP.putIfAbsent(uid, new CopyOnWriteArrayList<>());
         ONLINE_UID_MAP.get(uid).add(channel);
+        NettyUtil.setAttr(channel, NettyUtil.UID, uid);
     }
 
     /**
@@ -180,7 +189,7 @@ public class WebSocketServiceImpl implements WebSocketService {
         if (uidOptional.isPresent()) {
             CopyOnWriteArrayList<Channel> channels = ONLINE_UID_MAP.get(uidOptional.get());
             if (CollectionUtil.isNotEmpty(channels)) {
-                channels.removeIf(channel1 -> channel1.equals(channel));
+                channels.removeIf(ch -> Objects.equals(ch, channel));
             }
             return CollectionUtil.isEmpty(ONLINE_UID_MAP.get(uidOptional.get()));
         }
@@ -227,7 +236,7 @@ public class WebSocketServiceImpl implements WebSocketService {
 
     //entrySet的值不是快照数据,但是它支持遍历，所以无所谓了，不用快照也行。
     @Override
-    public void sendToAllOnline(WSBaseResp wsBaseResp, Long skipUid) {
+    public void sendToAllOnline(WSBaseResp<?> wsBaseResp, Long skipUid) {
         ONLINE_WS_MAP.forEach((channel, ext) -> {
             if (ObjectUtil.equal(ext.getUid(), skipUid)) {
                 return;
@@ -236,7 +245,12 @@ public class WebSocketServiceImpl implements WebSocketService {
         });
     }
 
-    private void sendMsg(Channel channel, WSBaseResp wsBaseResp) {
+    @Override
+    public void sendToAllOnline(WSBaseResp<?> wsBaseResp) {
+        sendToAllOnline(wsBaseResp, null);
+    }
+
+    private void sendMsg(Channel channel, WSBaseResp<?> wsBaseResp) {
         channel.writeAndFlush(new TextWebSocketFrame(JSONUtil.toJsonStr(wsBaseResp)));
     }
 

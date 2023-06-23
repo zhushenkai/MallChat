@@ -1,11 +1,13 @@
-package com.abin.mallchat.common.chat.domain.entity;
+package com.abin.mallchat.common.chat.domain.entity.msg;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.io.Serializable;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -17,8 +19,13 @@ import java.util.Map;
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class MessageExtra implements Serializable {
     private static final long serialVersionUID = 1L;
-    //注册时的ip
+    //url跳转链接
     private Map<String, String> urlTitleMap;
+    //消息撤回详情
+    private MsgRecall recall;
+    //艾特的uid
+    private List<Long> atUidList;
 }

@@ -1,20 +1,27 @@
 package com.abin.mallchat.custom.user.service.impl;
 
+import cn.hutool.core.util.StrUtil;
+import com.abin.mallchat.common.common.event.UserBlackEvent;
 import com.abin.mallchat.common.common.event.UserRegisterEvent;
 import com.abin.mallchat.common.common.utils.AssertUtil;
+import com.abin.mallchat.common.common.utils.SensitiveWordUtils;
+import com.abin.mallchat.common.user.dao.BlackDao;
 import com.abin.mallchat.common.user.dao.ItemConfigDao;
 import com.abin.mallchat.common.user.dao.UserBackpackDao;
 import com.abin.mallchat.common.user.dao.UserDao;
+import com.abin.mallchat.common.user.domain.dto.ItemInfoDTO;
+import com.abin.mallchat.common.user.domain.dto.SummeryInfoDTO;
+import com.abin.mallchat.common.user.domain.entity.Black;
 import com.abin.mallchat.common.user.domain.entity.ItemConfig;
 import com.abin.mallchat.common.user.domain.entity.User;
 import com.abin.mallchat.common.user.domain.entity.UserBackpack;
+import com.abin.mallchat.common.user.domain.enums.BlackTypeEnum;
 import com.abin.mallchat.common.user.domain.enums.ItemEnum;
 import com.abin.mallchat.common.user.domain.enums.ItemTypeEnum;
-import com.abin.mallchat.common.user.service.IUserBackpackService;
 import com.abin.mallchat.common.user.service.cache.ItemCache;
 import com.abin.mallchat.common.user.service.cache.UserCache;
-import com.abin.mallchat.custom.user.domain.vo.request.user.ModifyNameReq;
-import com.abin.mallchat.custom.user.domain.vo.request.user.WearingBadgeReq;
+import com.abin.mallchat.common.user.service.cache.UserSummaryCache;
+import com.abin.mallchat.custom.user.domain.vo.request.user.*;
 import com.abin.mallchat.custom.user.domain.vo.response.user.BadgeResp;
 import com.abin.mallchat.custom.user.domain.vo.response.user.UserInfoResp;
 import com.abin.mallchat.custom.user.service.UserService;
@@ -25,7 +32,10 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -46,11 +56,13 @@ public class UserServiceImpl implements UserService {
     @Autowired
     private ItemConfigDao itemConfigDao;
     @Autowired
-    private IUserBackpackService iUserBackpackService;
-    @Autowired
     private ApplicationEventPublisher applicationEventPublisher;
     @Autowired
     private ItemCache itemCache;
+    @Autowired
+    private BlackDao blackDao;
+    @Autowired
+    private UserSummaryCache userSummaryCache;
 
     @Override
     public UserInfoResp getUserInfo(Long uid) {
@@ -63,7 +75,9 @@ public class UserServiceImpl implements UserService {
     @Transactional
     public void modifyName(Long uid, ModifyNameReq req) {
         //判断名字是不是重复
-        User oldUser = userDao.getByName(req.getName());
+        String newName = req.getName();
+        AssertUtil.isFalse(SensitiveWordUtils.hasSensitiveWord(newName), "名字中包含敏感词，请重新输入"); // 判断名字中有没有敏感词
+        User oldUser = userDao.getByName(newName);
         AssertUtil.isEmpty(oldUser, "名字已经被抢占了，请换一个哦~~");
         //判断改名卡够不够
         UserBackpack firstValidItem = userBackpackDao.getFirstValidItem(uid, ItemEnum.MODIFY_NAME_CARD.getId());
@@ -74,7 +88,7 @@ public class UserServiceImpl implements UserService {
             //改名
             userDao.modifyName(uid, req.getName());
             //删除缓存
-            userCache.delUserInfo(uid);
+            userCache.userInfoChange(uid);
         }
     }
 
@@ -100,7 +114,7 @@ public class UserServiceImpl implements UserService {
         //佩戴徽章
         userDao.wearingBadge(uid, req.getBadgeId());
         //删除用户缓存
-        userCache.delUserInfo(uid);
+        userCache.userInfoChange(uid);
     }
 
     @Override
@@ -108,5 +122,73 @@ public class UserServiceImpl implements UserService {
         User insert = User.builder().openId(openId).build();
         userDao.save(insert);
         applicationEventPublisher.publishEvent(new UserRegisterEvent(this, insert));
+    }
+
+    @Override
+    public void black(BlackReq req) {
+        Long uid = req.getUid();
+        Black user = new Black();
+        user.setTarget(uid.toString());
+        user.setType(BlackTypeEnum.UID.getType());
+        blackDao.save(user);
+        User byId = userDao.getById(uid);
+        blackIp(byId.getIpInfo().getCreateIp());
+        blackIp(byId.getIpInfo().getUpdateIp());
+        applicationEventPublisher.publishEvent(new UserBlackEvent(this, byId));
+    }
+
+    @Override
+    public List<SummeryInfoDTO> getSummeryUserInfo(SummeryInfoReq req) {
+        //需要前端同步的uid
+        List<Long> uidList = getNeedSyncUidList(req.getReqList());
+        //加载用户信息
+        Map<Long, SummeryInfoDTO> batch = userSummaryCache.getBatch(uidList);
+        return req.getReqList()
+                .stream()
+                .map(a -> batch.containsKey(a.getUid()) ? batch.get(a.getUid()) : SummeryInfoDTO.skip(a.getUid()))
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<ItemInfoDTO> getItemInfo(ItemInfoReq req) {//简单做，更新时间可判断被修改
+        return req.getReqList().stream().map(a -> {
+            ItemConfig itemConfig = itemCache.getById(a.getItemId());
+            if (Objects.nonNull(a.getLastModifyTime()) && a.getLastModifyTime() >= itemConfig.getUpdateTime().getTime()) {
+                return ItemInfoDTO.skip(a.getItemId());
+            }
+            ItemInfoDTO dto = new ItemInfoDTO();
+            dto.setItemId(itemConfig.getId());
+            dto.setImg(itemConfig.getImg());
+            dto.setDescribe(itemConfig.getDescribe());
+            return dto;
+        }).collect(Collectors.toList());
+    }
+
+    private List<Long> getNeedSyncUidList(List<SummeryInfoReq.infoReq> reqList) {
+        List<Long> result = new ArrayList<>();
+        List<Long> userModifyTime = userCache.getUserModifyTime(reqList.stream().map(SummeryInfoReq.infoReq::getUid).collect(Collectors.toList()));
+        for (int i = 0; i < reqList.size(); i++) {
+            SummeryInfoReq.infoReq infoReq = reqList.get(i);
+            Long modifyTime = userModifyTime.get(i);
+            if (Objects.isNull(infoReq.getLastModifyTime()) || (Objects.nonNull(modifyTime) && modifyTime > infoReq.getLastModifyTime())) {
+                result.add(infoReq.getUid());
+            }
+        }
+        return result;
+    }
+
+    public void blackIp(String ip) {
+        if (StrUtil.isBlank(ip)) {
+            return;
+        }
+        try {
+            Black user = new Black();
+            user.setTarget(ip);
+            user.setType(BlackTypeEnum.IP.getType());
+            blackDao.save(user);
+        } catch (Exception e) {
+            log.error("duplicate black ip:{}", ip);
+        }
     }
 }

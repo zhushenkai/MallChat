@@ -4,7 +4,6 @@ import com.abin.mallchat.common.common.annotation.RedissonLock;
 import com.abin.mallchat.common.common.domain.enums.IdempotentEnum;
 import com.abin.mallchat.common.common.domain.enums.YesOrNoEnum;
 import com.abin.mallchat.common.common.event.ItemReceiveEvent;
-import com.abin.mallchat.common.user.dao.ItemConfigDao;
 import com.abin.mallchat.common.user.dao.UserBackpackDao;
 import com.abin.mallchat.common.user.domain.entity.ItemConfig;
 import com.abin.mallchat.common.user.domain.entity.UserBackpack;
@@ -13,6 +12,7 @@ import com.abin.mallchat.common.user.service.IUserBackpackService;
 import com.abin.mallchat.common.user.service.cache.ItemCache;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.util.Objects;
@@ -30,16 +30,22 @@ public class UserBackpackServiceImpl implements IUserBackpackService {
     @Autowired
     private UserBackpackDao userBackpackDao;
     @Autowired
-    private ItemConfigDao itemConfigDao;
-    @Autowired
     private ItemCache itemCache;
     @Autowired
     private ApplicationEventPublisher applicationEventPublisher;
+    @Autowired
+    @Lazy
+    private UserBackpackServiceImpl userBackpackService;
 
     @Override
-    @RedissonLock(key = "#uid", waitTime = 5000)//相同用户会同时发奖，需要排队不能直接拒绝
     public void acquireItem(Long uid, Long itemId, IdempotentEnum idempotentEnum, String businessId) {
+        //组装幂等号
         String idempotent = getIdempotent(itemId, idempotentEnum, businessId);
+        userBackpackService.doAcquireItem(uid, itemId, idempotent);
+    }
+
+    @RedissonLock(key = "#idempotent", waitTime = 5000)//相同幂等如果同时发奖，需要排队等上一个执行完，取出之前数据返回
+    public void doAcquireItem(Long uid, Long itemId, String idempotent) {
         UserBackpack userBackpack = userBackpackDao.getByIdp(idempotent);
         //幂等检查
         if (Objects.nonNull(userBackpack)) {

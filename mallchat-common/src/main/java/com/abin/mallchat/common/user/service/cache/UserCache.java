@@ -8,9 +8,12 @@ import com.abin.mallchat.common.common.domain.vo.response.CursorPageBaseResp;
 import com.abin.mallchat.common.common.utils.CursorUtils;
 import com.abin.mallchat.common.common.utils.RedisUtils;
 import com.abin.mallchat.common.user.dao.BlackDao;
+import com.abin.mallchat.common.user.dao.RoleDao;
 import com.abin.mallchat.common.user.dao.UserDao;
+import com.abin.mallchat.common.user.dao.UserRoleDao;
 import com.abin.mallchat.common.user.domain.entity.Black;
 import com.abin.mallchat.common.user.domain.entity.User;
+import com.abin.mallchat.common.user.domain.entity.UserRole;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -34,6 +37,10 @@ public class UserCache {
     private UserDao userDao;
     @Autowired
     private BlackDao blackDao;
+    @Autowired
+    private RoleDao roleDao;
+    @Autowired
+    private UserRoleDao userRoleDao;
 
     public Long getOnlineNum() {
         String onlineKey = RedisKey.getKey(RedisKey.ONLINE_UID_ZET);
@@ -43,6 +50,16 @@ public class UserCache {
     public Long getOfflineNum() {
         String offlineKey = RedisKey.getKey(RedisKey.OFFLINE_UID_ZET);
         return RedisUtils.zCard(offlineKey);
+    }
+
+    //移除用户
+    public void remove(Long uid) {
+        String onlineKey = RedisKey.getKey(RedisKey.ONLINE_UID_ZET);
+        String offlineKey = RedisKey.getKey(RedisKey.OFFLINE_UID_ZET);
+        //移除离线表
+        RedisUtils.zRemove(offlineKey, uid);
+        //移除上线表
+        RedisUtils.zRemove(onlineKey, uid);
     }
 
     //用户上线
@@ -78,11 +95,18 @@ public class UserCache {
         return cursorUtils.getCursorPageByRedis(pageBaseReq, RedisKey.getKey(RedisKey.OFFLINE_UID_ZET), Long::parseLong);
     }
 
+    public List<Long> getUserModifyTime(List<Long> uidList) {
+        List<String> keys = uidList.stream().map(uid -> RedisKey.getKey(RedisKey.USER_MODIFY_STRING, uid)).collect(Collectors.toList());
+        return RedisUtils.mget(keys, Long.class);
+    }
+
+    public void refreshUserModifyTime(Long uid) {
+        String key = RedisKey.getKey(RedisKey.USER_MODIFY_STRING, uid);
+        RedisUtils.set(key, new Date().getTime());
+    }
+
     /**
      * 获取用户信息，盘路缓存模式
-     *
-     * @param uid
-     * @return
      */
     public User getUserInfo(Long uid) {//todo 后期做二级缓存
         return getUserInfoBatch(Collections.singleton(uid)).get(uid);
@@ -90,9 +114,6 @@ public class UserCache {
 
     /**
      * 获取用户信息，盘路缓存模式
-     *
-     * @param uids
-     * @return
      */
     public Map<Long, User> getUserInfoBatch(Set<Long> uids) {
         List<String> keys = uids.stream().map(a -> RedisKey.getKey(RedisKey.USER_INFO_STRING, a)).collect(Collectors.toList());
@@ -109,6 +130,11 @@ public class UserCache {
         return map;
     }
 
+    public void userInfoChange(Long uid) {
+        delUserInfo(uid);
+        refreshUserModifyTime(uid);
+    }
+
     public void delUserInfo(Long uid) {
         String key = RedisKey.getKey(RedisKey.USER_INFO_STRING, uid);
         RedisUtils.del(key);
@@ -117,7 +143,7 @@ public class UserCache {
     @Cacheable(cacheNames = "user", key = "'blackList'")
     public Map<Integer, Set<String>> getBlackMap() {
         Map<Integer, List<Black>> collect = blackDao.list().stream().collect(Collectors.groupingBy(Black::getType));
-        Map<Integer, Set<String>> result = new HashMap<>();
+        Map<Integer, Set<String>> result = new HashMap<>(collect.size());
         for (Map.Entry<Integer, List<Black>> entry : collect.entrySet()) {
             result.put(entry.getKey(), entry.getValue().stream().map(Black::getTarget).collect(Collectors.toSet()));
         }
@@ -127,5 +153,13 @@ public class UserCache {
     @CacheEvict(cacheNames = "user", key = "'blackList'")
     public Map<Integer, Set<String>> evictBlackMap() {
         return null;
+    }
+
+    @Cacheable(cacheNames = "user", key = "'roles'+#uid")
+    public Set<Long> getRoleSet(Long uid) {
+        List<UserRole> userRoles = userRoleDao.listByUid(uid);
+        return userRoles.stream()
+                .map(UserRole::getRoleId)
+                .collect(Collectors.toSet());
     }
 }

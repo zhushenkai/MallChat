@@ -7,9 +7,10 @@ import io.swagger.annotations.ApiModelProperty;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.apache.commons.lang3.StringUtils;
 
 import javax.validation.constraints.Max;
-import java.util.Objects;
+import javax.validation.constraints.Min;
 
 /**
  * @author <a href="https://github.com/zongzibinbin">abin</a>
@@ -22,7 +23,8 @@ import java.util.Objects;
 public class CursorPageBaseReq {
 
     @ApiModelProperty("页面大小")
-    @Max(50)
+    @Min(0)
+    @Max(100)
     private Integer pageSize = 10;
 
     @ApiModelProperty("游标（初始为null，后续请求附带上次翻页的游标）")
@@ -34,6 +36,6 @@ public class CursorPageBaseReq {
 
     @JsonIgnore
     public Boolean isFirstPage() {
-        return Objects.isNull(cursor);
+        return StringUtils.isEmpty(cursor);
     }
 }
